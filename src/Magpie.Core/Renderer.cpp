@@ -1023,7 +1023,7 @@ void Renderer::_BackendRender(ID3D11Texture2D* effectsOutput) noexcept {
         ScalingWindow::Get().Options().effects;
 
     const bool useVoltaDLSS =
-        effects.size() == 1 &&
+        !effects.empty() &&
         effects[0].name == "VoltaDLSS";
 
     if (useVoltaDLSS) {
@@ -1035,12 +1035,18 @@ void Renderer::_BackendRender(ID3D11Texture2D* effectsOutput) noexcept {
         ID3D11Texture2D* captureTexture =
             _frameSource->GetOutput();
 
+        // VoltaDLSS is the first stage of the effect chain.
+        // Let CUDA write directly into the first drawer's output,
+        // then let normal Magpie effects consume that texture.
+        ID3D11Texture2D* voltaOutput =
+            _effectDrawers[0].GetOutputTexture();
+
         float kernelMs = 0.0f;
 
         if (!GetVoltaDLSSBridge().Process(
                 _backendResources.GetD3DDevice(),
                 captureTexture,
-                effectsOutput,
+                voltaOutput,
                 &kernelMs)) {
             Logger::Get().Error("VoltaDLSS processing failed");
             return;
@@ -1053,7 +1059,7 @@ void Renderer::_BackendRender(ID3D11Texture2D* effectsOutput) noexcept {
             D3D11_TEXTURE2D_DESC outputDesc{};
 
             captureTexture->GetDesc(&inputDesc);
-            effectsOutput->GetDesc(&outputDesc);
+            voltaOutput->GetDesc(&outputDesc);
 
             Logger::Get().Info(fmt::format(
                 "VoltaDLSS v2 active: {}x{} -> {}x{}, CUDA kernel {:.3f} ms",
@@ -1066,6 +1072,16 @@ void Renderer::_BackendRender(ID3D11Texture2D* effectsOutput) noexcept {
 
             loggedVolta = true;
         }
+
+        // Skip the VoltaDLSS HLSL drawer itself because CUDA already
+        // produced its output. Run every later effect normally.
+        _effectsProfiler.OnBeginEffects(d3dDC);
+
+        for (uint32_t i = 1; i < _effectDrawers.size(); ++i) {
+            _effectDrawers[i].Draw(_effectsProfiler);
+        }
+
+        _effectsProfiler.OnEndEffects(d3dDC);
     }
     else {
         _effectsProfiler.OnBeginEffects(d3dDC);
