@@ -1,4 +1,4 @@
-﻿#include "easu_reference.h"
+#include "easu_reference.h"
 #include "easu_tensor.h"
 
 #include <cuda_runtime.h>
@@ -1234,6 +1234,337 @@ EasuTensorData easuGetTensorData(
     const EasuSamples s =
         gatherSamples(
             input,
+            inputWidth,
+            inputHeight,
+            fpX,
+            fpY);
+
+    const float bL = easuLuma(s.b);
+    const float cL = easuLuma(s.c);
+    const float eL = easuLuma(s.e);
+    const float fL = easuLuma(s.f);
+    const float gL = easuLuma(s.g);
+    const float hL = easuLuma(s.h);
+    const float iL = easuLuma(s.i);
+    const float jL = easuLuma(s.j);
+    const float kL = easuLuma(s.k);
+    const float lL = easuLuma(s.l);
+    const float nL = easuLuma(s.n);
+    const float oL = easuLuma(s.o);
+
+    EasuFloat2 dir =
+    {
+        0.0f,
+        0.0f
+    };
+
+    float len = 0.0f;
+
+    easuSet(
+        dir,
+        len,
+        pp,
+        true,
+        false,
+        false,
+        false,
+        bL,
+        eL,
+        fL,
+        gL,
+        jL);
+
+    easuSet(
+        dir,
+        len,
+        pp,
+        false,
+        true,
+        false,
+        false,
+        cL,
+        fL,
+        gL,
+        hL,
+        kL);
+
+    easuSet(
+        dir,
+        len,
+        pp,
+        false,
+        false,
+        true,
+        false,
+        fL,
+        iL,
+        jL,
+        kL,
+        nL);
+
+    easuSet(
+        dir,
+        len,
+        pp,
+        false,
+        false,
+        false,
+        true,
+        gL,
+        jL,
+        kL,
+        lL,
+        oL);
+
+    const float dirR =
+        dir.x * dir.x +
+        dir.y * dir.y;
+
+    const bool zero =
+        dirR <
+        (1.0f / 32768.0f);
+
+    float dirScale =
+        easuLoRsq(dirR);
+
+    if (zero)
+        dirScale = 1.0f;
+
+    if (zero)
+        dir.x = 1.0f;
+
+    dir.x *= dirScale;
+    dir.y *= dirScale;
+
+    len *= 0.5f;
+    len *= len;
+
+    const float maxDir =
+        fmaxf(
+            fabsf(dir.x),
+            fabsf(dir.y));
+
+    const float stretch =
+        (dir.x * dir.x +
+         dir.y * dir.y) *
+        easuLoRcp(maxDir);
+
+    EasuFloat2 len2 =
+    {
+        1.0f +
+            (stretch - 1.0f) * len,
+
+        1.0f -
+            0.5f * len
+    };
+
+    const float lob =
+        0.5f +
+        ((0.25f - 0.04f) - 0.5f) *
+        len;
+
+    const float clp =
+        easuLoRcp(lob);
+
+    int weightIndex = 0;
+
+    // The order MUST match the output tap order below.
+    const EasuFloat2 offsets[12] =
+    {
+        {0.0f - pp.x, -1.0f - pp.y},
+        {1.0f - pp.x, -1.0f - pp.y},
+        {-1.0f - pp.x, 1.0f - pp.y},
+        {0.0f - pp.x, 1.0f - pp.y},
+        {0.0f - pp.x, 0.0f - pp.y},
+        {-1.0f - pp.x, 0.0f - pp.y},
+        {1.0f - pp.x, 1.0f - pp.y},
+        {2.0f - pp.x, 1.0f - pp.y},
+        {2.0f - pp.x, 0.0f - pp.y},
+        {1.0f - pp.x, 0.0f - pp.y},
+        {1.0f - pp.x, 2.0f - pp.y},
+        {0.0f - pp.x, 2.0f - pp.y}
+    };
+
+    float rawWeights[12]{};
+    float weightSum = 0.0f;
+
+    for (int i = 0; i < 12; ++i)
+    {
+        EasuFloat2 v{};
+
+        v.x =
+            offsets[i].x * dir.x +
+            offsets[i].y * dir.y;
+
+        v.y =
+            offsets[i].x * (-dir.y) +
+            offsets[i].y * dir.x;
+
+        v.x *= len2.x;
+        v.y *= len2.y;
+
+        float d2 =
+            v.x * v.x +
+            v.y * v.y;
+
+        d2 =
+            fminf(
+                d2,
+                clp);
+
+        float wB =
+            0.4f * d2 -
+            1.0f;
+
+        float wA =
+            lob * d2 -
+            1.0f;
+
+        wB *= wB;
+        wA *= wA;
+
+        wB =
+            (25.0f / 16.0f) *
+            wB -
+            ((25.0f / 16.0f) - 1.0f);
+
+        rawWeights[i] =
+            wB * wA;
+
+        weightSum +=
+            rawWeights[i];
+    }
+
+    const float invWeight =
+        1.0f / weightSum;
+
+    for (int i = 0; i < 12; ++i)
+    {
+        result.weights[i] =
+            rawWeights[i] *
+            invWeight;
+    }
+
+    (void)weightIndex;
+
+    return result;
+}
+
+
+__device__
+EasuFloat3 fetchEasuSurface(
+    cudaSurfaceObject_t surface,
+    int width,
+    int height,
+    int x,
+    int y)
+{
+    x =
+        easuClamp(
+            x,
+            0,
+            width - 1);
+
+    y =
+        easuClamp(
+            y,
+            0,
+            height - 1);
+
+    const uchar4 pixel =
+        surf2Dread<uchar4>(
+            surface,
+            x * 4,
+            y);
+
+    constexpr float scale =
+        1.0f / 255.0f;
+
+    return {
+        static_cast<float>(pixel.x) * scale,
+        static_cast<float>(pixel.y) * scale,
+        static_cast<float>(pixel.z) * scale
+    };
+}
+
+
+__device__
+EasuSamples gatherSamplesSurface(
+    cudaSurfaceObject_t surface,
+    int width,
+    int height,
+    int fpX,
+    int fpY)
+{
+    EasuSamples s{};
+
+    s.b = fetchEasuSurface(surface, width, height, fpX + 0, fpY - 1);
+    s.c = fetchEasuSurface(surface, width, height, fpX + 1, fpY - 1);
+
+    s.e = fetchEasuSurface(surface, width, height, fpX - 1, fpY + 0);
+    s.f = fetchEasuSurface(surface, width, height, fpX + 0, fpY + 0);
+    s.g = fetchEasuSurface(surface, width, height, fpX + 1, fpY + 0);
+    s.h = fetchEasuSurface(surface, width, height, fpX + 2, fpY + 0);
+
+    s.i = fetchEasuSurface(surface, width, height, fpX - 1, fpY + 1);
+    s.j = fetchEasuSurface(surface, width, height, fpX + 0, fpY + 1);
+    s.k = fetchEasuSurface(surface, width, height, fpX + 1, fpY + 1);
+    s.l = fetchEasuSurface(surface, width, height, fpX + 2, fpY + 1);
+
+    s.n = fetchEasuSurface(surface, width, height, fpX + 0, fpY + 2);
+    s.o = fetchEasuSurface(surface, width, height, fpX + 1, fpY + 2);
+
+    return s;
+}
+
+
+__device__
+EasuTensorData easuGetTensorDataSurface(
+    cudaSurfaceObject_t inputSurface,
+    int inputWidth,
+    int inputHeight,
+    int outputX,
+    int outputY,
+    int outputWidth,
+    int outputHeight)
+{
+    EasuTensorData result{};
+
+    const EasuConstants con =
+        makeEasuConstants(
+            inputWidth,
+            inputHeight,
+            outputWidth,
+            outputHeight);
+
+    EasuFloat2 pp =
+    {
+        static_cast<float>(outputX) *
+            con.con0.x +
+            con.con0.z,
+
+        static_cast<float>(outputY) *
+            con.con0.y +
+            con.con0.w
+    };
+
+    const int fpX =
+        static_cast<int>(
+            floorf(pp.x));
+
+    const int fpY =
+        static_cast<int>(
+            floorf(pp.y));
+
+    result.fpX = fpX;
+    result.fpY = fpY;
+
+    pp.x -= static_cast<float>(fpX);
+    pp.y -= static_cast<float>(fpY);
+
+    const EasuSamples s =
+        gatherSamplesSurface(
+            inputSurface,
             inputWidth,
             inputHeight,
             fpX,

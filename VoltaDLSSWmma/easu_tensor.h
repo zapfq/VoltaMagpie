@@ -1,8 +1,12 @@
-﻿#pragma once
+#pragma once
 
 #include "scaler.h"
 
 #include <d3d11.h>
+
+#if defined(__CUDACC__)
+#include <cuda_runtime.h>
+#endif
 
 struct EasuTensorData
 {
@@ -38,6 +42,11 @@ struct EasuTensorPipeline
 
     void* outputResource = nullptr;
     ID3D11Texture2D* registeredOutputTexture = nullptr;
+
+    cudaSurfaceObject_t inputSurface = 0;
+    cudaSurfaceObject_t outputSurface = 0;
+
+    bool directSurfaceActive = false;
 
     bool initialized = false;
 };
